@@ -112,12 +112,17 @@ class RotateMNIST(Dataset):
 
         img = Image.fromarray(img.numpy(), mode='L')
 
+        #  0       360
         rot_min, rot_max = self.rotate_angle
         angle = np.random.rand() * (rot_max - rot_min) + rot_min
 
         img = rotate(img, angle)
         img = transforms.ToTensor()(img).to(torch.float)
 
+        # np.array([angle / 360.0], dtype=np.float32)就相当于查看在360度里占多少
+        # 所以才有后面
+        # self.is_source = (self.domain < 1.0 / 8).to(torch.float)    # 小于1/8就是0   大于则是1
+        # # self.t_class = (self.domain * 8).floor().to(torch.long)   # 第几个domain  向下取整是因为从0开始
         return img, \
                target, \
                np.array([angle / 360.0], dtype=np.float32), \
