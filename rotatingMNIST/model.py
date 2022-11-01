@@ -51,7 +51,7 @@ def set_default_args(opt):
 
     # training parameteres
     opt.num_epoch = 100
-    opt.batch_size = 100
+    opt.batch_size = 8
     opt.lr = 2e-4
     opt.weight_decay = 5e-4
     opt.beta1 = 0.9
@@ -93,10 +93,17 @@ def to_tensor(x, device='cuda'):
 class RotateMNIST(Dataset):
     #                  rotate_angle=(0, 360)
     def __init__(self, rotate_angle):
-        root = './data'
-        processed_folder = os.path.join(root, 'MNIST', 'processed')
-        data_file = 'training.pt'
-        self.data, self.targets = torch.load(os.path.join(processed_folder, data_file))
+        # root = './data'
+        # processed_folder = os.path.join(root, 'MNIST', 'processed')
+        # data_file = 'training.pt'
+        # self.data, self.targets = torch.load(os.path.join(processed_folder, data_file))
+
+        # self.data, self.targets = torch.FloatTensor(50, 3, 256, 256), torch.ones(50, 1)
+        self.data, self.targets = torch.FloatTensor(50, 1, 28, 28), torch.ones(50, 1)
+        # print(f"self.data.shape = {self.data.shape}")
+        # print(f"self.targets.shape = {self.targets.shape}")
+        # import pdb; pdb.set_trace()
+
         self.rotate_angle = rotate_angle
 
     def __getitem__(self, index):
@@ -110,14 +117,14 @@ class RotateMNIST(Dataset):
         """
         img, target = self.data[index], int(self.targets[index])
 
-        img = Image.fromarray(img.numpy(), mode='L')
+        # img = Image.fromarray(img.numpy(), mode='L')
 
         #  0       360
         rot_min, rot_max = self.rotate_angle
         angle = np.random.rand() * (rot_max - rot_min) + rot_min
 
-        img = rotate(img, angle)
-        img = transforms.ToTensor()(img).to(torch.float)
+        # img = rotate(img, angle)
+        # img = transforms.ToTensor()(img).to(torch.float)
 
         # np.array([angle / 360.0], dtype=np.float32)就相当于查看在360度里占多少
         # 所以才有后面
@@ -186,6 +193,7 @@ class EncoderSTN(nn.Module):
         nh = 256
 
         self.fc_stn = nn.Sequential(
+            #              1  
             nn.Linear(opt.dim_domain + 28 * 28, nh), nn.LeakyReLU(0.2), nn.Dropout(opt.dropout),
             nn.Linear(nh, nh), nn.BatchNorm1d(nh), nn.LeakyReLU(0.2), nn.Dropout(opt.dropout),
             nn.Linear(nh, 3),
@@ -193,6 +201,7 @@ class EncoderSTN(nn.Module):
 
         nz = opt.nz
 
+        # 通过下面的conv进latent space
         self.conv = nn.Sequential(
             nn.Conv2d(1, nh, 3, 2, 1), nn.BatchNorm2d(nh), nn.ReLU(True), nn.Dropout(opt.dropout),  # 14 x 14
             nn.Conv2d(nh, nh, 3, 2, 1), nn.BatchNorm2d(nh), nn.ReLU(True), nn.Dropout(opt.dropout),  # 7 x 7
@@ -200,6 +209,7 @@ class EncoderSTN(nn.Module):
             nn.Conv2d(nh, nz, 4, 1, 0), nn.ReLU(True),  # 1 x 1
         )
 
+        # predictor（接在latent space上）
         self.fc_pred = nn.Sequential(
             nn.Conv2d(nz, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.ReLU(True),
             nn.Conv2d(nh, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.ReLU(True),
@@ -207,24 +217,29 @@ class EncoderSTN(nn.Module):
             nn.Linear(nh, 10),
         )
 
-    def stn(self, x, u):
+    def stn(self, x, u):   # x.shape  --> torch.Size([2, 1, 28, 28])
         # A_vec = self.fc_stn(u)
+        #  Linear堆叠的block
 
-        #         Linear堆叠的block
-        A_vec = self.fc_stn(torch.cat([u, x.reshape(-1, 28 * 28)], 1))
-        A = convert_Avec_to_A(A_vec)
-        _, evs = torch.symeig(A, eigenvectors=True)
-        tcos, tsin = evs[:, 0:1, 0:1], evs[:, 1:2, 0:1]
+        # a = torch.cat([u, x.reshape(-1, 28 * 28)], 1)
+        # print(f" torch.cat([u, x.reshape(-1, 28 * 28)], 1).shape {a.shape}")
+        # import pdb; pdb.set_trace()
 
-        self.theta_angle = torch.atan2(tsin[:, 0, 0], tcos[:, 0, 0])
+
+        A_vec = self.fc_stn(torch.cat([u, x.reshape(-1, 28 * 28)], 1))    #  A_vec.shape    torch.Size([2, 3])
+        A = convert_Avec_to_A(A_vec)    # A.shape    torch.Size([2, 2, 2])
+        _, evs = torch.symeig(A, eigenvectors=True)    # evs.shape    torch.Size([2, 2, 2])
+        tcos, tsin = evs[:, 0:1, 0:1], evs[:, 1:2, 0:1]      # tcos.shape -> torch.Size([2, 1, 1])        tsin.shape -> torch.Size([2, 1, 1]) 
+
+        self.theta_angle = torch.atan2(tsin[:, 0, 0], tcos[:, 0, 0])    # self.theta_angle.shape -->  torch.Size([2])
 
         # clock-wise rotate theta
-        theta_0 = torch.cat([tcos, tsin, tcos * 0], 2)
-        theta_1 = torch.cat([-tsin, tcos, tcos * 0], 2)
-        theta = torch.cat([theta_0, theta_1], 1)
+        theta_0 = torch.cat([tcos, tsin, tcos * 0], 2)     # theta_0.shape  --> torch.Size([2, 1, 3])
+        theta_1 = torch.cat([-tsin, tcos, tcos * 0], 2)    # theta_1.shape  --> torch.Size([2, 1, 3])
+        theta = torch.cat([theta_0, theta_1], 1)           # theta.shape  --> torch.Size([2, 2, 3])
 
-        grid = F.affine_grid(theta, x.size())
-        x = F.grid_sample(x, grid)
+        grid = F.affine_grid(theta, x.size())      # grid.shape    torch.Size([2, 28, 28, 2])
+        x = F.grid_sample(x, grid)    # x.shape  -->  torch.Size([2, 1, 28, 28])   与输入的x尺寸相同，这样融合了domain index
         return x
 
     def forward(self, x, u):
@@ -233,10 +248,10 @@ class EncoderSTN(nn.Module):
         :param u: B x nu
         :return:
         """
-        x = self.stn(x, u)
-        z = self.conv(x)
-        y = self.fc_pred(z)
-        return F.log_softmax(y, dim=1), x, z
+        x = self.stn(x, u)   # torch.Size([2, 1, 28, 28])  与输入的x尺寸相同，这样融合了domain index
+        z = self.conv(x)     # z.shape  -->  torch.Size([2, 100, 1, 1])
+        y = self.fc_pred(z)  # y.shape  -->  torch.Size([2, 10])
+        return F.log_softmax(y, dim=1), x, z   #  F.log_softmax(y, dim=1).shape  -->  torch.Size([2, 10])
 
 
 # ======================================================================================================================
@@ -325,17 +340,19 @@ class BaseModel(nn.Module):
     def learn(self, epoch, dataloader):
         self.epoch = epoch
         self.train()
-
-        loss_curve = {
-            loss: []
-            for loss in self.loss_names
-        }
+        loss_curve = {loss: [] for loss in self.loss_names}
         self.acc_reset_mnist()
 
         bar = ProgressBar()
-
         for data in bar(dataloader):
-            x, y, t, is_source = [to_tensor(_, self.opt.device) for _ in data]
+            x, y, t, is_source = [to_tensor(_, self.opt.device) for _ in data]  # data = batch_size
+
+            # print(x.shape)
+            # print(f"y {y}")
+            # print(f"t {t}")
+            # import pdb; pdb.set_trace()
+
+
             self.set_input(input=(x, y, t, is_source))
             self.optimize_parameters()
 
@@ -454,7 +471,7 @@ class DiscConv(nn.Module):
             nn.Conv2d(nin, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.LeakyReLU(),
             nn.Conv2d(nh, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.LeakyReLU(),
             nn.Conv2d(nh, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.LeakyReLU(),
-            nnSqueeze(),
+            nnSqueeze(),  #     def forward(self, x):     return torch.squeeze(x)
             nn.Linear(nh, nout),
         )
 
@@ -465,7 +482,6 @@ class DiscConv(nn.Module):
 class CIDA(BaseModel):
     def __init__(self, opt):
         super(CIDA, self).__init__(opt)
-
         self.opt = opt
         self.netE = EncoderSTN(opt)
         self.init_weight(self.netE)
@@ -475,19 +491,52 @@ class CIDA(BaseModel):
         self.lr_scheduler_G = lr_scheduler.ExponentialLR(optimizer=self.optimizer_G, gamma=0.5 ** (1 / 50))
         self.lr_scheduler_D = lr_scheduler.ExponentialLR(optimizer=self.optimizer_D, gamma=0.5 ** (1 / 50))
         self.lr_schedulers = [self.lr_scheduler_G, self.lr_scheduler_D]
-
         self.lambda_gan = opt.lambda_gan
         self.loss_names = ['D', 'E_gan', 'E_pred']
 
     def set_input(self, input):
         self.x, self.y, self.u, self.domain = input
+
+
+        # print(f"self.domain.shape {self.domain.shape}")  #  self.domain.shape   torch.Size([2, 1])  
+        # print(f"self.domain {self.domain}")  # self.domain tensor([[0.5066], 
+        #                                      #                     [0.1097]], device='cuda:0')
+
+
         self.domain = self.domain[:, 0]
         self.is_source = (self.domain < 1.0 / 8).to(torch.float)
 
+
+        # print(self.x.shape)   # torch.Size([2, 1, 28, 28])
+        # print(f"self.y {self.y}")  # self.y tensor([1, 1], device='cuda:0')
+        # print()
+
+        # print(f"self.u.shape {self.u.shape}")  # self.u.shape   torch.Size([2, 1])
+        # print(f"self.u {self.u}")  # self.u tensor([[0.8216], [0.9395]], device='cuda:0')
+        # print()
+
+        # print(f"self.domain[:, 0].shape {self.domain.shape}")  # self.domain[:, 0].shape  torch.Size([2])
+        # print(f"self.domain[:, 0] {self.domain}")  # self.domain  tensor([0.8216, 0.9395], device='cuda:0')
+        # print()
+
+        # print(f"self.is_source {self.is_source}") # self.is_source tensor([0., 0.], device='cuda:0')
+        # import pdb; pdb.set_trace()
+
+
     def forward(self):
         self.f, self.x_align, self.e = self.netE(self.x, self.u)
-        self.g = torch.argmax(self.f.detach(), dim=1)
-
+        """
+        def forward(self, x, u):
+            :param x: B x 1 x 28 x 28
+            :param u: B x nu
+            :return:
+            x = self.stn(x, u)   # torch.Size([2, 1, 28, 28])  与输入的x尺寸相同, 这样融合了domain index
+            z = self.conv(x)     # z.shape  -->  torch.Size([2, 100, 1, 1])
+            y = self.fc_pred(z)  # y.shape  -->  torch.Size([2, 10])
+            return F.log_softmax(y, dim=1), x, z   #  F.log_softmax(y, dim=1).shape  -->  torch.Size([2, 10])
+        """
+        self.g = torch.argmax(self.f.detach(), dim=1)   # torch.Size([2, 2])   从10个类的预测中挑出最大的那一类作为最终预测是0~9中的哪个数字
+ 
     def backward_G(self):
         self.d = self.netD(self.e)
 
@@ -503,7 +552,20 @@ class CIDA(BaseModel):
         self.loss_E.backward()
 
     def backward_D(self):
-        self.d = self.netD(self.e.detach())
+        """  netD   
+        self.net = nn.Sequential(
+            nn.Conv2d(nin, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.LeakyReLU(),
+            nn.Conv2d(nh, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.LeakyReLU(),
+            nn.Conv2d(nh, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.LeakyReLU(),
+            nnSqueeze(),  #     def forward(self, x):     return torch.squeeze(x)
+            nn.Linear(nh, nout),
+        ) 
+        """
+        self.d = self.netD(self.e.detach())   # self.d.shape -> torch.Size([2, 1])   ==>  tensor([[0.0121],
+                                                                                    #             [0.0121]], device='cuda:0', grad_fn=<AddmmBackward0>)
+
+        import pdb; pdb.set_trace()
+
         D_src = F.mse_loss(self.d[self.is_source == 1], self.u[self.is_source == 1])
         D_tgt = F.mse_loss(self.d[self.is_source == 0], self.u[self.is_source == 0])
         self.loss_D = (D_src + D_tgt) / 2
@@ -527,7 +589,11 @@ def neg_guassian_likelihood(d, u):
     """return: -N(u; mu, var)"""
     B, dim = u.shape
     assert (d.shape[1] == dim * 2)
-    mu, logvar = d[:, :dim], d[:, dim:]
+    mu, logvar = d[:, :dim], d[:, dim:]   # mu tensor([[0.0247]])          logvar tensor([[-0.0164]])
+
+    import pdb; pdb.set_trace()
+
+
     return 0.5 * (((u - mu) ** 2) / torch.exp(logvar) + logvar).mean()
 
 
@@ -540,8 +606,7 @@ class PCIDA(CIDA):
         self.lr_schedulers = [self.lr_scheduler_G, self.lr_scheduler_D]
 
     def backward_G(self):
-        self.d = self.netD(self.e)
-
+        self.d = self.netD(self.e)  
         E_gan_src = neg_guassian_likelihood(self.d[self.is_source == 1], self.u[self.is_source == 1])
         E_gan_tgt = neg_guassian_likelihood(self.d[self.is_source == 0], self.u[self.is_source == 0])
         self.loss_E_gan = - (E_gan_src + E_gan_tgt) / 2
@@ -554,10 +619,38 @@ class PCIDA(CIDA):
         self.loss_E.backward()
 
     def backward_D(self):
-        self.d = self.netD(self.e.detach())
+        """    netD
+        self.net = nn.Sequential(
+            nn.Conv2d(nin, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.LeakyReLU(),
+            nn.Conv2d(nh, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.LeakyReLU(),
+            nn.Conv2d(nh, nh, 1, 1, 0), nn.BatchNorm2d(nh), nn.LeakyReLU(),
+            nnSqueeze(),  #     def forward(self, x):     return torch.squeeze(x)
+            nn.Linear(nh, nout),
+        )
+        """
+        """  self.f, self.x_align, self.e = self.netE(self.x, self.u) 
+        netE -> def forward(self, x, u):
+                    :param x: B x 1 x 28 x 28
+                    :param u: B x nu
+                    :return:
+                    x = self.stn(x, u)   # torch.Size([2, 1, 28, 28])  与输入的x尺寸相同, 这样融合了domain index
+                    z = self.conv(x)     # z.shape  -->  torch.Size([2, 100, 1, 1])
+                    y = self.fc_pred(z)  # y.shape  -->  torch.Size([2, 10])
+                    return F.log_softmax(y, dim=1), x, z   #  F.log_softmax(y, dim=1).shape  -->  torch.Size([2, 10])
+        """
+
+        # import pdb; pdb.set_trace()
+        """  self.e.shape  --> torch.Size([2, 100, 1, 1])"""
+
+        # self.e 是融合了domain index信息和data本身的latent encode
+        self.d = self.netD(self.e.detach())   # torch.Size([2, 2])   tensor([[0.0434, 0.0135],
+                                                                    #        [0.0434, 0.0135]], device='cuda:0', grad_fn=<AddmmBackward0>)
         D_src = neg_guassian_likelihood(self.d[self.is_source == 1], self.u[self.is_source == 1])
         D_tgt = neg_guassian_likelihood(self.d[self.is_source == 0], self.u[self.is_source == 0])
         self.loss_D = (D_src + D_tgt) / 2
+
+        import pdb; pdb.set_trace()
+
         self.loss_D.backward()
 
 
@@ -582,6 +675,7 @@ class ADDA(BaseModel):
         self.f, self.x_align, self.e = self.netE(self.x, self.u)
         self.g = torch.argmax(self.f.detach(), dim=1)
 
+
     def backward_G(self):
         self.d = torch.sigmoid(self.netD(self.e))
         self.d_t = self.d[self.is_source == 0]
@@ -591,8 +685,14 @@ class ADDA(BaseModel):
         self.loss_E.backward()
 
     def backward_D(self):
+
+        print(self.e.shape)
+
         self.d = torch.sigmoid(self.netD(self.e.detach()))
-        self.d_s = self.d[self.is_source == 1]
+
+        print(self.d.shape)
+        import pdb; pdb.set_trace()
+
         self.d_t = self.d[self.is_source == 0]
         self.loss_D = - torch.log(self.d_s + 1e-10).mean() \
                       - torch.log(1 - self.d_t + 1e-10).mean()
@@ -860,6 +960,7 @@ class ContinousRotateMNIST(Dataset):
 
     def __getitem__(self, i):
         x_src, y_src, u_src, _ = self.ds_source[i]
+        # src中采样
         x_tgt, y_tgt, u_tgt, _ = self.ds_target[self.phase][i]
         x_rpy, y_rpy, u_rpy = self.rand_sample(self.ds_replay)
         return x_src, y_src, u_src, x_rpy, y_rpy, u_rpy, x_tgt, y_tgt, u_tgt
@@ -871,14 +972,13 @@ class ContinousRotateMNIST(Dataset):
 if __name__ == '__main__':
     from easydict import EasyDict
     import argparse
-
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', default='SO', choices=['SO', 'ADDA', 'CIDA', 'DANN', 'PCIDA', 'CUA'])
+    # parser.add_argument('--model', default='CIDA', choices=['SO', 'ADDA', 'CIDA', 'DANN', 'PCIDA', 'CUA'])
+    parser.add_argument('--model', default='PCIDA', choices=['SO', 'ADDA', 'CIDA', 'DANN', 'PCIDA', 'CUA'])
     parser.add_argument('--lambda_gan', default=2.0, type=float)
     parser.add_argument('--num_epoch', default=100, type=int)
     parser.add_argument('--nz', default=100, type=int)
     parser.add_argument('--device', default='cuda', type=str)
-
     args = parser.parse_args()
 
     opt = EasyDict()
@@ -893,9 +993,18 @@ if __name__ == '__main__':
     opt.num_epoch = args.num_epoch
     opt.nz = args.nz
     print_args(opt)
+    # download()
 
-    download()
     dataset = RotateMNIST(rotate_angle=(0, 360))
+
+    # first_data = dataset[0]
+    # x, y, t, is_source = first_data  # y是转为int类型了的
+    # print(f"x {x.shape}")
+    # print(f"y {y}")
+    # print(f"t {t}")
+    # import pdb; pdb.set_trace()
+
+
     train_dataloader = DataLoader(
         dataset=dataset,
         shuffle=True,
@@ -908,6 +1017,18 @@ if __name__ == '__main__':
         batch_size=opt.batch_size,
         num_workers=4,
     )
+
+
+    # dataiter = iter(train_dataloader)
+    # data = next(dataiter)
+    # x, y, t, is_source = data
+    # print(f"x {x.shape}")  #  x torch.Size([2, 3, 256, 256])
+    # print(f"y {y}")        #  y tensor([1, 1])
+    # print(f"t {t}")        #  t tensor([[0.8242], [0.7560]])
+    # print(f"is_source {is_source}")
+    # import pdb; pdb.set_trace()
+
+
     model_pool = {
         'SO': SO,
         'CIDA': CIDA,
@@ -929,6 +1050,7 @@ if __name__ == '__main__':
                 if acc_target > best_acc_target:
                     print('Best acc target. saved.')
                     model.save()
+
     else:
         # continual DA training
 
